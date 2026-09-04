@@ -267,19 +267,29 @@ def test_watering_plan_leaves_unknown_needs_null_rather_than_guessing(conn):
     assert plan["Mystery shrub"]["litres_per_week"] is None
 
 
-def test_solar_camera_does_not_inherit_the_sonoff_camera_verdict(conn):
-    """Regression: the solar dual-lens camera is not a Sonoff product.
+def test_niview_camera_does_not_inherit_the_sonoff_camera_verdict(conn):
+    """Regression: the NiView camera is not a Sonoff product.
 
     It was once assumed to be one because it sat on a shopping list among
     Sonoff devices, and so wrongly inherited Sonoff's ONVIF/RTSP support.
-    Asking about the solar camera must surface its own 'unknown' verdict and
-    must not return the Sonoff finding at all.
+    Asking about it must never return the Sonoff finding.
     """
-    result = registry.check_compatibility(conn, "Solar dual-linkage camera")
+    result = registry.check_compatibility(conn, "NiView")
 
-    assert result["verdict"] == "unknown"
+    assert result["matches"], "the NiView finding should exist"
     subjects = " ".join(m["subject"] for m in result["matches"])
     assert "SONOFF" not in subjects.upper()
+
+
+def test_niview_records_the_open_source_route_and_its_risk(conn):
+    """Stock firmware offers no local access; thingino is the only route."""
+    result = registry.check_compatibility(conn, "NiView")
+    match = result["matches"][0]
+
+    assert "thingino" in match["requires"].lower()
+    assert "thingino-firmware" in match["evidence_url"]
+    # The risk must travel with the recommendation, not be discovered later.
+    assert "bricks" in match["caveat"].lower()
 
 
 def test_sonoff_camera_rule_is_explicitly_scoped_to_sonoff(conn):
@@ -297,7 +307,18 @@ def test_battery_camera_limitation_is_recorded_as_a_general_rule(conn):
 
 def test_the_camera_is_listed_as_not_yet_reachable(conn):
     stranded = [r["name"] for r in registry.find_unreachable(conn)]
-    assert "Solar dual-linkage security camera" in stranded
+    assert "NiView dual-lens security camera" in stranded
+
+
+def test_the_camera_appears_exactly_once_after_the_rename(conn):
+    """Regression: 003 inserts under the old name, 004 renames it.
+
+    Re-applying the migration set must converge on one camera row, not add a
+    duplicate on every pass.
+    """
+    cameras = registry.search_equipment(conn, "NiView")
+    assert len(cameras) == 1, [c["name"] for c in cameras]
+    assert not registry.search_equipment(conn, "Solar dual-linkage")
 
 
 def test_find_account_returns_a_location_and_never_a_secret(conn):
