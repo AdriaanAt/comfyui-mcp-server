@@ -17,6 +17,7 @@ on:
       - "deploy/**"
       - "tests/test_stack_check.py"
       - "tests/test_homestead_registry.py"
+      - "tests/test_surveys.py"
       - ".github/workflows/home-platform.yml"
   pull_request:
     paths:
@@ -25,6 +26,7 @@ on:
       - "deploy/**"
       - "tests/test_stack_check.py"
       - "tests/test_homestead_registry.py"
+      - "tests/test_surveys.py"
       - ".github/workflows/home-platform.yml"
   workflow_dispatch:
 
@@ -57,7 +59,7 @@ jobs:
       # reaching these tests. These test files are self-contained and need
       # no fixtures from that conftest.
       - name: Run stack check tests
-        run: pytest tests/test_stack_check.py -v --noconftest
+        run: pytest tests/test_stack_check.py tests/test_surveys.py -v --noconftest
 
       - name: Verify the health check runs and reports failure cleanly
         run: |
