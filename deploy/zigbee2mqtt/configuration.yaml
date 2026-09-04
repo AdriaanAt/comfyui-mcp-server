@@ -1,0 +1,44 @@
+# Zigbee2MQTT - SONOFF Dongle Plus MG24 (EFR32MG24).
+#
+# The MG24 speaks EmberZNet, so the adapter is `ember` - not `ezsp`, which is
+# the deprecated driver, and not `zstack`, which is for the CC2652-based
+# ZBDongle-P. Getting this wrong produces confusing startup failures.
+#
+# Credentials come from the environment (see docker-compose.yml), so this file
+# carries no secrets and is safe to commit.
+
+homeassistant:
+  enabled: true
+
+frontend:
+  enabled: true
+  port: 8080
+
+mqtt:
+  base_topic: zigbee2mqtt
+  server: mqtt://mosquitto:1883
+
+serial:
+  port: /dev/ttyUSB0
+  adapter: ember
+  baudrate: 115200
+
+advanced:
+  # Generated on first run and then pinned. Losing these means re-pairing every
+  # device, so back up this file once devices are joined.
+  network_key: GENERATE
+  pan_id: GENERATE
+  ext_pan_id: GENERATE
+  # Channel 25 avoids the common 2.4 GHz Wi-Fi channels. If the Wi-Fi devices
+  # sit on channel 11, revisit this - Zigbee and Wi-Fi do interfere.
+  channel: 25
+  log_level: info
+  transmit_power: 20
+
+# Joining stays closed except when deliberately pairing a device, so nothing
+# unexpected can join the network. Open it from the frontend when adding the
+# water valve or a door sensor.
+permit_join: false
+
+devices: devices.yaml
+groups: groups.yaml

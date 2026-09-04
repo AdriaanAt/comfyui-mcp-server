@@ -1,0 +1,78 @@
+# Home automation core: MQTT broker, Zigbee coordinator, Home Assistant.
+#
+# Target: Docker Desktop with the WSL2 backend on Windows 11.
+# The Zigbee dongle reaches this stack via usbipd-win; see deploy/README.md,
+# which also covers the kernel module the CP210x serial chip needs.
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# Bridge networking is used rather than host networking because host mode
+# behaves differently under Docker Desktop. MQTT devices do not need it. The
+# cost is that Home Assistant's mDNS/SSDP auto-discovery will not see the LAN,
+# so Wi-Fi devices are added by IP or through MQTT instead.
+
+name: home-core
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"   # MQTT
+      - "9001:9001"   # websockets, for dashboards
+    volumes:
+      - ./mosquitto/config:/mosquitto/config:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    healthcheck:
+      # Proves the broker answers MQTT, not merely that the port is open.
+      test: ["CMD-SHELL", "mosquitto_sub -h 127.0.0.1 -t '$$SYS/#' -C 1 -W 3 -u \"$$MQTT_USERNAME\" -P \"$$MQTT_PASSWORD\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    environment:
+      MQTT_USERNAME: ${MQTT_USERNAME:?set MQTT_USERNAME in deploy/.env}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD in deploy/.env}
+
+  zigbee2mqtt:
+    image: ghcr.io/koenkk/zigbee2mqtt:latest
+    container_name: zigbee2mqtt
+    restart: unless-stopped
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    ports:
+      - "8080:8080"   # web frontend
+    volumes:
+      - ./zigbee2mqtt:/app/data
+      - /run/udev:/run/udev:ro
+    devices:
+      # Under WSL2 udev does not populate /dev/serial/by-id, so the raw node is
+      # used. On a native Linux host prefer the stable by-id path instead:
+      #   - /dev/serial/by-id/usb-ITead_SONOFF_Zigbee_3.0_USB_Dongle_Plus_...:/dev/ttyUSB0
+      - ${ZIGBEE_DEVICE:-/dev/ttyUSB0}:/dev/ttyUSB0
+    environment:
+      TZ: ${TZ:-Africa/Johannesburg}
+      ZIGBEE2MQTT_CONFIG_MQTT_USER: ${MQTT_USERNAME}
+      ZIGBEE2MQTT_CONFIG_MQTT_PASSWORD: ${MQTT_PASSWORD}
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: homeassistant
+    restart: unless-stopped
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    ports:
+      - "8123:8123"
+    volumes:
+      - ./homeassistant:/config
+      - /run/dbus:/run/dbus:ro
+    environment:
+      TZ: ${TZ:-Africa/Johannesburg}
+
+volumes:
+  mosquitto_data:
+  mosquitto_log:

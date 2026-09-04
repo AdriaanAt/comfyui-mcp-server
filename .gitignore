@@ -2,3 +2,15 @@
 __pycache__/
 *.pyc
 archive/
+
+# Home automation deployment secrets and runtime state
+deploy/.env
+deploy/mosquitto/config/passwd
+deploy/mosquitto/config/certs/
+deploy/zigbee2mqtt/devices.yaml
+deploy/zigbee2mqtt/groups.yaml
+deploy/zigbee2mqtt/database.db*
+deploy/zigbee2mqtt/state.json
+deploy/zigbee2mqtt/log/
+deploy/zigbee2mqtt/coordinator_backup.json
+deploy/homeassistant/
