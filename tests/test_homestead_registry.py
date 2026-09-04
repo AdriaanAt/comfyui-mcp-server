@@ -30,16 +30,17 @@ pytestmark = pytest.mark.skipif(
     not DSN, reason="set HOMESTEAD_TEST_DSN to run homestead registry tests"
 )
 
-SCHEMA = REPO_ROOT / "homestead" / "sql" / "001_schema.sql"
-SEED = REPO_ROOT / "homestead" / "sql" / "002_seed_compatibility.sql"
+SQL_DIR = REPO_ROOT / "homestead" / "sql"
 
 
 @pytest.fixture(scope="module")
 def conn():
     with psycopg.connect(DSN, autocommit=True) as connection:
         connection.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
-        connection.execute(SCHEMA.read_text())
-        connection.execute(SEED.read_text())
+        # Apply every migration in order, so the fixture exercises the same
+        # sequence a real database receives - corrections included.
+        for path in sorted(SQL_DIR.glob("*.sql")):
+            connection.execute(path.read_text())
         yield connection
 
 
@@ -264,6 +265,39 @@ def test_watering_plan_leaves_unknown_needs_null_rather_than_guessing(conn):
     )
     plan = {p["common_name"]: p for p in registry.watering_plan(conn)}
     assert plan["Mystery shrub"]["litres_per_week"] is None
+
+
+def test_solar_camera_does_not_inherit_the_sonoff_camera_verdict(conn):
+    """Regression: the solar dual-lens camera is not a Sonoff product.
+
+    It was once assumed to be one because it sat on a shopping list among
+    Sonoff devices, and so wrongly inherited Sonoff's ONVIF/RTSP support.
+    Asking about the solar camera must surface its own 'unknown' verdict and
+    must not return the Sonoff finding at all.
+    """
+    result = registry.check_compatibility(conn, "Solar dual-linkage camera")
+
+    assert result["verdict"] == "unknown"
+    subjects = " ".join(m["subject"] for m in result["matches"])
+    assert "SONOFF" not in subjects.upper()
+
+
+def test_sonoff_camera_rule_is_explicitly_scoped_to_sonoff(conn):
+    result = registry.check_compatibility(conn, "SONOFF-branded cameras")
+    assert result["matches"], "the Sonoff camera finding should still exist"
+    assert "not apply to unbranded" in result["matches"][0]["notes"].lower()
+
+
+def test_battery_camera_limitation_is_recorded_as_a_general_rule(conn):
+    """A battery camera cannot hold a continuous stream, whatever the protocol."""
+    result = registry.check_compatibility(conn, "battery-powered PIR cameras")
+    assert result["matches"]
+    assert "continuous" in result["matches"][0]["caveat"]
+
+
+def test_the_camera_is_listed_as_not_yet_reachable(conn):
+    stranded = [r["name"] for r in registry.find_unreachable(conn)]
+    assert "Solar dual-linkage security camera" in stranded
 
 
 def test_find_account_returns_a_location_and_never_a_secret(conn):

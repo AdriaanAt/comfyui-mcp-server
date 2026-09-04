@@ -8,9 +8,13 @@
 
 BEGIN;
 
+-- Guarded by an anti-join on subject rather than ON CONFLICT: the table
+-- intentionally has no unique constraint on subject, because a subject may
+-- legitimately be re-checked later and gain a second, newer row. Without
+-- this guard, re-running the file would duplicate every seed row.
 INSERT INTO compatibility_rules
     (subject, verdict, requires, caveat, evidence_url, checked_on, notes)
-VALUES
+SELECT i.* FROM (VALUES
 
 -- The purchase that started all of this.
 ('SONOFF Zigbee Smart Water Valve',
@@ -59,8 +63,10 @@ VALUES
  DATE '2026-09-04',
  NULL),
 
--- Cameras: the trap that did not materialise.
-('SONOFF cameras (ONVIF/RTSP)',
+-- Cameras. Note the subject is scoped to Sonoff-branded units on purpose:
+-- this finding was once wrongly applied to an unbranded solar camera that
+-- merely sat beside Sonoff devices on a shopping list. See 003.
+('SONOFF-branded cameras (CAM-PT2 and similar)',
  'works_with_caveats',
  'Enable ONVIF/RTSP in eWeLink under Device Settings > More Settings, then '
  'add via ONVIF, go2rtc or Frigate.',
@@ -70,7 +76,10 @@ VALUES
  'https://sonoff.tech/en-us/blogs/news/how-to-add-security-camera-to-home-assistant',
  DATE '2026-09-04',
  'Community reports indicate the stream keeps working with the camera''s '
- 'internet access blocked, which makes local-only recording viable.'),
+ 'internet access blocked, which makes local-only recording viable. '
+ 'SCOPE: applies only to Sonoff-branded cameras sold through eWeLink. Does '
+ 'NOT apply to unbranded solar or 4G cameras, which are a different market '
+ 'with different firmware.'),
 
 -- Wi-Fi devices reach MQTT by a different road than the Zigbee ones.
 ('SONOFF 4CHR3 / 4CHPROR3',
@@ -138,6 +147,9 @@ VALUES
  'Free and open source. Earlier notes recorded it as possibly paid; it is '
  'not.')
 
-ON CONFLICT DO NOTHING;
+) AS i (subject, verdict, requires, caveat, evidence_url, checked_on, notes)
+WHERE NOT EXISTS (
+    SELECT 1 FROM compatibility_rules c WHERE c.subject = i.subject
+);
 
 COMMIT;
