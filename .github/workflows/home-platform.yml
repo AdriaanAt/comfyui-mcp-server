@@ -50,15 +50,25 @@ jobs:
       - name: Install pytest only
         run: python -m pip install --upgrade pip pytest
 
+      # --noconftest is load-bearing. tests/conftest.py belongs to the
+      # ComfyUI side and imports managers -> comfyui_client -> requests, and
+      # pytest loads it for anything under tests/ regardless of the file
+      # targeted. Without this flag the job dies on that import before
+      # reaching these tests. These test files are self-contained and need
+      # no fixtures from that conftest.
       - name: Run stack check tests
-        run: pytest tests/test_stack_check.py -v
+        run: pytest tests/test_stack_check.py -v --noconftest
 
       - name: Verify the health check runs and reports failure cleanly
         run: |
           # Nothing is listening, so every required probe should fail and the
           # exit status should be 1. A crash or a 0 here is the real bug.
-          python scripts/stack_check.py --timeout 1 --no-colour --json > report.json \
-            && { echo "expected exit 1 with no services up"; exit 1; }
+          # Written as an if rather than `cmd && { exit 1; }` because set -e
+          # semantics around AND-lists are subtle enough to misread.
+          if python scripts/stack_check.py --timeout 1 --no-colour --json > report.json; then
+            echo "::error::expected exit 1 when no services are up"
+            exit 1
+          fi
           python -c "
           import json
           report = json.load(open('report.json'))
@@ -167,7 +177,9 @@ jobs:
           HOMESTEAD_TEST_DSN: "host=localhost port=5432 user=postgres password=postgres dbname=homestead_test"
         run: |
           psql -c "CREATE DATABASE homestead_test;"
-          pytest tests/test_homestead_registry.py -v
+          # --noconftest for the same reason as the health-check job: the
+          # ComfyUI conftest imports requests, which this job does not install.
+          pytest tests/test_homestead_registry.py -v --noconftest
 
   deploy-config:
     name: Deployment compose file
