@@ -73,6 +73,18 @@ docker run --rm -it -v "$PWD/deploy/mosquitto/config:/mosquitto/config" \
   eclipse-mosquitto:2 mosquitto_passwd -c -b /mosquitto/config/passwd homecore 'YOUR_PASSWORD'
 ```
 
+> **Windows/Docker Desktop gotcha:** `mosquitto_passwd -c` creates `passwd` as
+> `0600`, root-owned. The container drops privileges to a non-root user before
+> reading it, so the broker fails to start with `Error: Unable to open pwfile`
+> and restart-loops. `chmod` from the Windows side does not reliably change
+> what the container sees on a bind-mounted drive; fix it from inside a Linux
+> container instead:
+>
+> ```bash
+> docker run --rm -v "$PWD/deploy/mosquitto/config:/mosquitto/config" \
+>   --entrypoint sh eclipse-mosquitto:2 -c "chmod 644 /mosquitto/config/passwd"
+> ```
+
 ---
 
 ## 3. Start
