@@ -80,7 +80,7 @@ def read_manifests(models_dir: Path) -> list[dict[str, Any]]:
                 break
 
         digests: dict[str, int] = {}
-        for layer in data.get("layers", []):
+        for layer in data.get("layers") or []:
             if digest := layer.get("digest"):
                 digests[digest] = int(layer.get("size") or 0)
         config = data.get("config") or {}
