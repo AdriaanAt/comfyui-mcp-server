@@ -209,6 +209,82 @@ def test_quick_mode_counts_files_without_reading_sizes(tmp_path):
     assert quick["model_bytes"] == 0
 
 
+def test_models_outside_any_install_are_found(tmp_path):
+    """Regression: the original scan only looked inside <install>/models/.
+
+    Real layouts keep the model library in a shared directory beside the
+    installs, so an install-relative scan reported zero while hundreds of
+    gigabytes sat next door.
+    """
+    _install(tmp_path / "Comfy-Desktop" / "ComfyUI-Installs" / "ComfyUI", [], {})
+    shared = tmp_path / "Comfy-Desktop" / "ComfyUI-Shared" / "models" / "checkpoints"
+    shared.mkdir(parents=True)
+    (shared / "sdxl.safetensors").write_bytes(b"m" * 9000)
+    loose = tmp_path / "ComfyUI_safetensors"
+    loose.mkdir()
+    (loose / "flux.safetensors").write_bytes(b"m" * 7000)
+
+    files = comfy_survey.scan_all_models([tmp_path], quick=False)
+    summary = comfy_survey.summarise_models(files)
+
+    assert summary["total_files"] == 2
+    assert summary["total_bytes"] == 16000
+
+
+def test_bundled_weights_are_flagged_as_do_not_move(tmp_path):
+    """Weights inside a node or package are loaded by relative path."""
+    node = tmp_path / "ComfyUI" / "custom_nodes" / "impact"
+    node.mkdir(parents=True)
+    (node / "yolo.pt").write_bytes(b"m" * 400)
+    pkg = tmp_path / "python_embeded" / "Lib" / "site-packages" / "insightface"
+    pkg.mkdir(parents=True)
+    (pkg / "det.onnx").write_bytes(b"m" * 300)
+
+    kinds = {f["name"]: f["kind"] for f in comfy_survey.scan_all_models([tmp_path], False)}
+
+    assert "do not move" in kinds["yolo.pt"]
+    assert "do not move" in kinds["det.onnx"]
+
+
+def test_bundled_duplicates_are_not_counted_as_reclaimable(tmp_path):
+    """Two packages shipping the same weight is not redundancy to reclaim.
+
+    Deleting one would break whichever package lost its copy.
+    """
+    for pkg in ("a", "b"):
+        d = tmp_path / pkg / "site-packages" / "lib"
+        d.mkdir(parents=True)
+        (d / "shared.onnx").write_bytes(b"m" * 500)
+
+    summary = comfy_survey.summarise_models(
+        comfy_survey.scan_all_models([tmp_path], quick=False)
+    )
+    # Found and reported, but not offered up for deletion.
+    assert summary["total_files"] == 2
+    assert all("do not move" in k for k in summary["by_kind"])
+
+
+def test_ffmpeg_and_other_binaries_are_not_counted_as_models(tmp_path):
+    d = tmp_path / "ffmpeg-master-latest-win64-gpl-shared" / "bin"
+    d.mkdir(parents=True)
+    (d / "ffmpeg.exe").write_bytes(b"x" * 60000)
+    (d / "avcodec.dll").write_bytes(b"x" * 40000)
+
+    assert comfy_survey.scan_all_models([tmp_path], quick=False) == []
+
+
+def test_overlapping_roots_do_not_double_count(tmp_path):
+    d = tmp_path / "Workspace" / "models"
+    d.mkdir(parents=True)
+    (d / "a.safetensors").write_bytes(b"m" * 1000)
+
+    summary = comfy_survey.summarise_models(
+        comfy_survey.scan_all_models([tmp_path, tmp_path / "Workspace"], quick=False)
+    )
+    assert summary["total_files"] == 1
+    assert summary["total_bytes"] == 1000
+
+
 def test_non_model_files_are_not_counted_as_models(tmp_path):
     root = _install(tmp_path / "one", [], {"checkpoints": [("a.safetensors", 100)]})
     (root / "models" / "checkpoints" / "put_checkpoints_here.txt").write_text("hi")

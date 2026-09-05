@@ -32,11 +32,16 @@ MODEL_SUFFIXES = {
     ".onnx", ".sft", ".vae", ".yaml_model",
 }
 
-# Directories never worth walking - they are caches or environments, not content.
+# Directories not worth walking when LOOKING FOR INSTALLS. Note this is not
+# used by the model scan: model weights genuinely do live inside custom_nodes
+# and site-packages, and skipping those there would under-report badly.
 SKIP_DIRS = {
     "__pycache__", ".git", "node_modules", ".venv", "venv",
     "site-packages", "python_embeded", "standalone-env", ".cache",
 }
+
+# Files that are weights but ship as part of code, not as your model library.
+BUNDLED_MARKERS = ("site-packages", "custom_nodes", "python_embeded")
 
 
 def human(size: float) -> str:
@@ -231,6 +236,139 @@ def compare(installs: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def classify(path: Path) -> str:
+    """Whether a model file is yours to move, or belongs to code that needs it.
+
+    Weights inside custom_nodes or site-packages are dependencies of the node
+    or package that ships them, loaded by relative path. Relocating those
+    breaks the thing that uses them, so they must never be swept into a shared
+    models directory - which is exactly the mistake a naive dedupe would make.
+    """
+    parts = {p.lower() for p in path.parts}
+    if "site-packages" in parts or "python_embeded" in parts:
+        return "package-bundled (do not move)"
+    if "custom_nodes" in parts:
+        return "custom-node asset (do not move)"
+    if "models" in parts:
+        return "models directory"
+    return "loose / shared"
+
+
+def scan_all_models(roots: list[Path], quick: bool) -> list[dict[str, Any]]:
+    """Every model file under the roots, wherever it sits.
+
+    Deliberately does NOT use SKIP_DIRS. Model weights are routinely found in
+    a shared directory outside any install, inside custom_nodes, or bundled
+    into site-packages, and an install-relative scan misses all three.
+    """
+    found: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            try:
+                if not path.is_file() or path.suffix.lower() not in MODEL_SUFFIXES:
+                    continue
+                resolved = path.resolve()
+                if resolved in seen:      # overlapping roots must not double-count
+                    continue
+                seen.add(resolved)
+                size = 0 if quick else path.stat().st_size
+            except (OSError, PermissionError):
+                continue
+            found.append(
+                {
+                    "path": str(path),
+                    "dir": str(path.parent),
+                    "name": path.name,
+                    "size": size,
+                    "kind": classify(path),
+                }
+            )
+    return found
+
+
+def summarise_models(files: list[dict[str, Any]]) -> dict[str, Any]:
+    by_dir: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"count": 0, "bytes": 0, "kind": ""}
+    )
+    by_kind: dict[str, dict[str, int]] = defaultdict(lambda: {"count": 0, "bytes": 0})
+    by_identity: dict[tuple, list[str]] = defaultdict(list)
+
+    for f in files:
+        entry = by_dir[f["dir"]]
+        entry["count"] += 1
+        entry["bytes"] += f["size"]
+        entry["kind"] = f["kind"]
+        by_kind[f["kind"]]["count"] += 1
+        by_kind[f["kind"]]["bytes"] += f["size"]
+        by_identity[(f["name"], f["size"])].append(f["dir"])
+
+    # Only count duplicates among files that are actually movable - a weight
+    # bundled into two different packages is not redundancy to reclaim.
+    movable_dupes = {
+        k: v for k, v in by_identity.items()
+        if len(set(v)) > 1 and k[1] > 0
+    }
+    reclaimable = sum(size * (len(set(dirs)) - 1) for (_, size), dirs in movable_dupes.items())
+
+    return {
+        "total_files": len(files),
+        "total_bytes": sum(f["size"] for f in files),
+        "by_dir": dict(by_dir),
+        "by_kind": dict(by_kind),
+        "duplicate_groups": len(movable_dupes),
+        "reclaimable_bytes": reclaimable,
+        "duplicates": {
+            f"{name} ({human(size)})": sorted(set(dirs))
+            for (name, size), dirs in sorted(
+                movable_dupes.items(), key=lambda kv: -kv[0][1]
+            )[:15]
+        },
+    }
+
+
+def render_models(summary: dict[str, Any], quick: bool) -> str:
+    lines = ["", "=" * 72, "Model files found anywhere under the given roots", ""]
+    if quick:
+        lines.append("  (--quick: sizes not measured; re-run without it for real numbers)")
+        lines.append("")
+    lines.append(f"  {summary['total_files']} files, {human(summary['total_bytes'])} total")
+    lines.append("")
+
+    for kind, stats in sorted(summary["by_kind"].items(), key=lambda kv: -kv[1]["bytes"]):
+        lines.append(f"    {human(stats['bytes']):>12}  {stats['count']:>5} files  {kind}")
+    lines.append("")
+
+    lines.append("  Directories holding models, largest first:")
+    ranked = sorted(summary["by_dir"].items(), key=lambda kv: -kv[1]["bytes"])
+    for directory, stats in ranked[:25]:
+        flag = "" if stats["kind"] in ("models directory", "loose / shared") else "  [LEAVE]"
+        lines.append(f"    {human(stats['bytes']):>12}  {stats['count']:>4}  {directory}{flag}")
+    if len(ranked) > 25:
+        lines.append(f"    ... and {len(ranked) - 25} more directories")
+    lines.append("")
+
+    if summary["duplicate_groups"]:
+        lines.append(
+            f"  Duplicated model files: {summary['duplicate_groups']} "
+            f"({human(summary['reclaimable_bytes'])} reclaimable)"
+        )
+        for label, dirs in summary["duplicates"].items():
+            lines.append(f"    {label}")
+            for d in dirs:
+                lines.append(f"        {d}")
+        lines.append("")
+
+    lines.append("  [LEAVE] marks weights that belong to a custom node or an installed")
+    lines.append("  package. They are loaded by relative path - moving them into a")
+    lines.append("  shared models folder breaks the node or package that needs them.")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def render(installs: list[dict[str, Any]], comparison: dict[str, Any], quick: bool) -> str:
     lines = ["", "ComfyUI installs", "=" * 72, ""]
     if quick:
@@ -310,27 +448,45 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--quick", action="store_true",
         help="count files but skip byte totals (much faster on large drives)",
     )
+    parser.add_argument(
+        "--models-only", action="store_true",
+        help="skip the install survey and only inventory model files",
+    )
     parser.add_argument("--json", action="store_true", help="emit JSON instead")
     args = parser.parse_args(argv)
 
-    paths: list[Path] = []
-    for root in args.roots:
-        for found in find_installs(Path(root)):
-            if found not in paths:
-                paths.append(found)
+    roots = [Path(r) for r in args.roots]
 
-    if not paths:
-        print("No ComfyUI installs found under the given roots.", file=sys.stderr)
-        return 1
+    # Always scan for models across the whole tree, not just inside installs.
+    # Models routinely live in a shared directory outside every install, and an
+    # install-relative scan reports zero while hundreds of gigabytes sit next
+    # door.
+    model_summary = summarise_models(scan_all_models(roots, args.quick))
 
-    installs = [survey(p, args.quick) for p in paths]
-    comparison = compare(installs)
+    installs: list[dict[str, Any]] = []
+    comparison: dict[str, Any] = {}
+    if not args.models_only:
+        paths: list[Path] = []
+        for root in roots:
+            for found in find_installs(root):
+                if found not in paths:
+                    paths.append(found)
+        if paths:
+            installs = [survey(p, args.quick) for p in paths]
+            comparison = compare(installs)
 
     if args.json:
         trimmed = [{k: v for k, v in i.items() if k != "model_files"} for i in installs]
-        print(json.dumps({"installs": trimmed, "comparison": comparison}, indent=2))
+        print(json.dumps(
+            {"installs": trimmed, "comparison": comparison, "models": model_summary},
+            indent=2,
+        ))
     else:
-        print(render(installs, comparison, args.quick))
+        if installs:
+            print(render(installs, comparison, args.quick))
+        elif not args.models_only:
+            print("No ComfyUI installs found under the given roots.", file=sys.stderr)
+        print(render_models(model_summary, args.quick))
     return 0
 
 
